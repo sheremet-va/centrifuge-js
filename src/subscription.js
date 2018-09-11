@@ -21,9 +21,11 @@ export default class Subscription extends EventEmitter {
     this._ready = false;
     this._subscriptionPromise = null;
     this._noResubscribe = false;
-    this._since = null;
+    this._recoverable = false;
+    this._recover = false;
     this._setEvents(events);
     this._initializePromise();
+    this._promises = {};
   }
 
   _initializePromise() {
@@ -45,7 +47,7 @@ export default class Subscription extends EventEmitter {
   };
 
   _needRecover() {
-    return this._since !== null;
+    return this._recoverable === true && this._recover === true;
   };
 
   _setEvents(events) {
@@ -110,9 +112,14 @@ export default class Subscription extends EventEmitter {
     this._status = _STATE_SUCCESS;
     const successContext = this._getSubscribeSuccessContext(recovered);
 
-    this._since = null;
+    this._recover = false;
     this.emit('subscribe', successContext);
     this._resolve(successContext);
+    for (const to in this._promises) {
+      clearTimeout(to);
+      this._promises[to].resolve();
+      delete this._promises[to];
+    }
   };
 
   _setSubscribeError(err) {
@@ -122,9 +129,13 @@ export default class Subscription extends EventEmitter {
     this._status = _STATE_ERROR;
     this._error = err;
     const errContext = this._getSubscribeErrorContext();
-
     this.emit('error', errContext);
     this._reject(errContext);
+    for (const to in this._promises) {
+      clearTimeout(to);
+      this._promises[to].reject(err);
+      delete this._promises[to];
+    }
   };
 
   _triggerUnsubscribe() {
@@ -141,9 +152,11 @@ export default class Subscription extends EventEmitter {
     const needTrigger = this._status === _STATE_SUCCESS;
     this._status = _STATE_UNSUBSCRIBED;
     if (noResubscribe === true) {
-      this._since = null;
+      this._recover = false;
       this._noResubscribe = true;
-      delete this._centrifuge._lastPubUID[this.channel];
+      delete this._centrifuge._lastSeq[this.channel];
+      delete this._centrifuge._lastGen[this.channel];
+      delete this._centrifuge._lastEpoch[this.channel];
     }
     if (needTrigger) {
       this._triggerUnsubscribe();
@@ -193,10 +206,43 @@ export default class Subscription extends EventEmitter {
   };
 
   _methodCall(message, type) {
-    return this._subscriptionPromise
-      .then(() => this._centrifuge._call(message))
-      .then(result => this._centrifuge._decoder.decodeCommandResult(type, result))
-    ;
+    const methodCallPromise = new Promise((resolve, reject) => {
+      let subPromise;
+      if (this._isSuccess()) {
+        subPromise = Promise.resolve();
+      } else if (this._isError()) {
+        subPromise = Promise.reject(this._error);
+      } else {
+        subPromise = new Promise((res, rej) => {
+          const timeout = setTimeout(function () {
+            rej({'code': 0, 'message': 'timeout'});
+          }, this._centrifuge._config.timeout);
+          this._promises[timeout] = {
+            resolve: res,
+            reject: rej
+          };
+        });
+      }
+      subPromise.then(
+        () => {
+          return this._centrifuge._call(message).then(
+            result => {
+              resolve(this._centrifuge._decoder.decodeCommandResult(type, result.result));
+              if (result.next) {
+                result.next();
+              }
+            },
+            error => {
+              reject(error);
+            }
+          );
+        },
+        error => {
+          reject(error);
+        }
+      );
+    });
+    return methodCallPromise;
   }
 
   publish(data) {

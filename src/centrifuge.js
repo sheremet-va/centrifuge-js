@@ -40,7 +40,9 @@ export class Centrifuge extends EventEmitter {
     this._clientID = null;
     this._refreshRequired = false;
     this._subs = {};
-    this._lastPubUID = {};
+    this._lastSeq = {};
+    this._lastGen = {};
+    this._lastEpoch = {};
     this._messages = [];
     this._isBatching = false;
     this._isSubscribeBatching = false;
@@ -56,8 +58,6 @@ export class Centrifuge extends EventEmitter {
     this._latencyStart = null;
     this._connectData = null;
     this._token = null;
-    this._serverTime = null;
-    this._hasRecoveryChannel = false;
     this._config = {
       debug: false,
       sockjs: null,
@@ -275,7 +275,6 @@ export class Centrifuge extends EventEmitter {
 
   _clearConnectedState(reconnect) {
     this._clientID = null;
-    this._hasRecoveryChannel = false;
     this._stopPing();
 
     // fire errbacks of registered outgoing calls.
@@ -300,7 +299,7 @@ export class Centrifuge extends EventEmitter {
         if (reconnect) {
           if (sub._isSuccess()) {
             sub._triggerUnsubscribe();
-            sub._since = this._getSince();
+            sub._recover = true;
           }
           sub._setSubscribing();
         } else {
@@ -369,7 +368,7 @@ export class Centrifuge extends EventEmitter {
 
       if (this._isSockjs) {
         this._transportName = 'sockjs-' + this._transport.transport;
-        this._transport.onheartbeat = () => this._restartPingIfNoRecoveryUsed();
+        this._transport.onheartbeat = () => this._restartPing();
       } else {
         this._transportName = 'websocket';
       }
@@ -393,7 +392,10 @@ export class Centrifuge extends EventEmitter {
 
       this._latencyStart = new Date();
       this._call(msg).then(result => {
-        this._connectResponse(this._decoder.decodeCommandResult(this._methodType.CONNECT, result));
+        this._connectResponse(this._decoder.decodeCommandResult(this._methodType.CONNECT, result.result));
+        if (result.next) {
+          result.next();
+        }
       }, err => {
         if (err.code === 109) { // token expired.
           this._refreshRequired = true;
@@ -417,7 +419,6 @@ export class Centrifuge extends EventEmitter {
           this._debug('reason is an advice object', advice);
           reason = advice.reason;
           needReconnect = advice.reconnect;
-          this._lastMessageTime = new Date();
         } catch (e) {
           reason = closeEvent.reason;
           this._debug('reason is a plain string', reason);
@@ -456,14 +457,7 @@ export class Centrifuge extends EventEmitter {
     };
 
     this._transport.onmessage = event => {
-      this._lastMessageTime = new Date();
-      const replies = this._decoder.decodeReplies(event.data);
-      for (const i in replies) {
-        if (replies.hasOwnProperty(i)) {
-          this._dispatchReply(replies[i]);
-        }
-      }
-      this._restartPingIfNoRecoveryUsed();
+      this._dataReceived(event.data);
     };
   };
 
@@ -474,7 +468,12 @@ export class Centrifuge extends EventEmitter {
         data: data
       }
     };
-    return this._call(msg).then(result => this._decoder.decodeCommandResult(this._methodType.RPC, result));
+    return this._call(msg).then(result => {
+      if (result.next) {
+        result.next();
+      }
+      return this._decoder.decodeCommandResult(this._methodType.RPC, result.result);
+    });
   }
 
   send(data) {
@@ -486,6 +485,23 @@ export class Centrifuge extends EventEmitter {
     };
 
     return this._callAsync(msg);
+  }
+
+  _dataReceived(data) {
+    const replies = this._decoder.decodeReplies(data);
+    // we have to guarantee order of events in replies processing - i.e. start processing
+    // next reply only when we finished processing of current one. Without syncing things in
+    // this way we could get wrong publication events order as reply promises resolve
+    // on next loop tick so for loop continues before we finished emitting all reply events.
+    let p = Promise.resolve();
+    for (const i in replies) {
+      if (replies.hasOwnProperty(i)) {
+        p = p.then(() => {
+          return this._dispatchReply(replies[i]);
+        });
+      }
+    }
+    this._restartPing();
   }
 
   _callAsync(msg) {
@@ -616,7 +632,10 @@ export class Centrifuge extends EventEmitter {
           }
         };
         this._call(msg).then(result => {
-          this._refreshResponse(this._decoder.decodeCommandResult(this._methodType.REFRESH, result));
+          this._refreshResponse(this._decoder.decodeCommandResult(this._methodType.REFRESH, result.result));
+          if (result.next) {
+            result.next();
+          }
         }, err => {
           this._refreshError(err);
         });
@@ -701,7 +720,13 @@ export class Centrifuge extends EventEmitter {
       }
 
       this._call(msg).then(result => {
-        this._subRefreshResponse(channel, this._decoder.decodeCommandResult(this._methodType.SUB_REFRESH, result));
+        this._subRefreshResponse(
+          channel,
+          this._decoder.decodeCommandResult(this._methodType.SUB_REFRESH, result.result)
+        );
+        if (result.next) {
+          result.next();
+        }
       }, err => {
         this._subRefreshError(channel, err);
       });
@@ -796,20 +821,27 @@ export class Centrifuge extends EventEmitter {
 
       if (recover === true) {
         msg.params.recover = true;
-        const last = this._getLastID(channel);
-        if (last !== '') {
-          msg.params.last = last;
+        const seq = this._getLastSeq(channel);
+        if (seq) {
+          msg.params.seq = seq;
         }
-        const since = sub._since;
-        if (since) {
-          msg.params.since = since;
+        const gen = this._getLastGen(channel);
+        if (gen) {
+          msg.params.gen = gen;
+        }
+        const epoch = this._getLastEpoch(channel);
+        if (epoch) {
+          msg.params.epoch = epoch;
         }
       }
 
       this._call(msg).then(result => {
-        this._subscribeResponse(channel, this._decoder.decodeCommandResult(this._methodType.SUBSCRIBE, result));
+        this._subscribeResponse(channel, this._decoder.decodeCommandResult(this._methodType.SUBSCRIBE, result.result));
+        if (result.next) {
+          result.next();
+        }
       }, err => {
-        this._subscribeError(err);
+        this._subscribeError(channel, err);
       });
     }
   };
@@ -838,10 +870,6 @@ export class Centrifuge extends EventEmitter {
     return sub;
   };
 
-  _getSince() {
-    return this._serverTime;
-  }
-
   _connectResponse(result) {
     const wasReconnecting = this._reconnecting;
     this._reconnecting = false;
@@ -857,7 +885,6 @@ export class Centrifuge extends EventEmitter {
     }
 
     this._clientID = result.client;
-    this._serverTime = result.time;
     this._setStatus('connected');
 
     if (this._refreshTimeout) {
@@ -926,11 +953,9 @@ export class Centrifuge extends EventEmitter {
     }, this._config.pingInterval);
   };
 
-  _restartPingIfNoRecoveryUsed() {
-    if (!this._hasRecoveryChannel) {
-      this._stopPing();
-      this._startPing();
-    }
+  _restartPing() {
+    this._stopPing();
+    this._startPing();
   };
 
   _subscribeError(channel, error) {
@@ -957,11 +982,6 @@ export class Centrifuge extends EventEmitter {
       return;
     }
 
-    if (result.time) {
-      this._serverTime = result.time;
-      this._hasRecoveryChannel = true;
-    }
-
     let recovered = false;
     if ('recovered' in result) {
       recovered = result.recovered;
@@ -979,10 +999,16 @@ export class Centrifuge extends EventEmitter {
         }
       }
     } else {
-      if ('last' in result) {
-        // no missed messages found so set last message id from result.
-        this._lastPubUID[channel] = result.last;
+      if (result.recoverable) {
+        this._lastSeq[channel] = result.seq || 0;
+        this._lastGen[channel] = result.gen || 0;
       }
+    }
+
+    this._lastEpoch[channel] = result.epoch || '';
+
+    if (result.recoverable) {
+      sub._recoverable = true;
     }
 
     if (result.expires === true) {
@@ -991,7 +1017,7 @@ export class Centrifuge extends EventEmitter {
     }
   };
 
-  _handleReply(reply) {
+  _handleReply(reply, next) {
     const id = reply.id;
     const result = reply.result;
 
@@ -1007,7 +1033,7 @@ export class Centrifuge extends EventEmitter {
       if (!callback) {
         return;
       }
-      callback(result);
+      callback({result, next});
     } else {
       const errback = callbacks.errback;
       if (!errback) {
@@ -1045,11 +1071,15 @@ export class Centrifuge extends EventEmitter {
   };
 
   _handlePublication(channel, pub) {
-    // keep last uid received from channel.
-    this._lastPubUID[channel] = pub.uid;
     const sub = this._getSub(channel);
     if (!sub) {
       return;
+    }
+    if (pub.seq !== undefined) {
+      this._lastSeq[channel] = pub.seq;
+    }
+    if (pub.gen !== undefined) {
+      this._lastGen[channel] = pub.gen;
     }
     sub.emit('publish', pub);
   };
@@ -1058,7 +1088,7 @@ export class Centrifuge extends EventEmitter {
     this.emit('message', message.data);
   };
 
-  _handlePush(data) {
+  _handlePush(data, next) {
     const push = this._decoder.decodePush(data);
     let type = 0;
     if ('type' in push) {
@@ -1082,21 +1112,30 @@ export class Centrifuge extends EventEmitter {
       const unsub = this._decoder.decodePushData(this._pushType.UNSUB, push.data);
       this._handleUnsub(channel, unsub);
     }
+    next();
   }
 
   _dispatchReply(reply) {
+    var next;
+    const p = new Promise(resolve =>{
+      next = resolve;
+    });
+
     if (reply === undefined || reply === null) {
       this._debug('dispatch: got undefined or null reply');
-      return;
+      next();
+      return p;
     }
 
     const id = reply.id;
 
     if (id && id > 0) {
-      this._handleReply(reply);
+      this._handleReply(reply, next);
     } else {
-      this._handlePush(reply.result);
+      this._handlePush(reply.result, next);
     }
+
+    return p;
   };
 
   _flush() {
@@ -1110,7 +1149,8 @@ export class Centrifuge extends EventEmitter {
       method: this._methodType.PING
     };
     this._call(msg).then(result => {
-      this._pingResponse(this._decoder.decodeCommandResult(this._methodType.PING, result));
+      this._pingResponse(this._decoder.decodeCommandResult(this._methodType.PING, result.result));
+      result.next();
     }, err => {
       this._debug('ping error', err);
     });
@@ -1120,21 +1160,31 @@ export class Centrifuge extends EventEmitter {
     if (!this.isConnected()) {
       return;
     }
-    if (result && result.time) {
-      this._serverTime = result.time;
-    }
     this._stopPing();
     this._startPing();
   }
 
-  _getLastID(channel) {
-    const lastUID = this._lastPubUID[channel];
-
-    if (lastUID) {
-      this._debug('last uid found and sent for channel', channel);
-      return lastUID;
+  _getLastSeq(channel) {
+    const lastSeq = this._lastSeq[channel];
+    if (lastSeq) {
+      return lastSeq;
     }
-    this._debug('no last uid found for channel', channel);
+    return 0;
+  };
+
+  _getLastGen(channel) {
+    const lastGen = this._lastGen[channel];
+    if (lastGen) {
+      return lastGen;
+    }
+    return 0;
+  };
+
+  _getLastEpoch(channel) {
+    const lastEpoch = this._lastEpoch[channel];
+    if (lastEpoch) {
+      return lastEpoch;
+    }
     return '';
   };
 
@@ -1187,7 +1237,7 @@ export class Centrifuge extends EventEmitter {
   };
 
   disconnect() {
-    this._disconnect('client', false);
+    this._disconnect('client', true);
   };
 
   ping() {
@@ -1298,16 +1348,27 @@ export class Centrifuge extends EventEmitter {
 
             if (recover === true) {
               msg.params.recover = true;
-              const last = this._getLastID(channel);
-              if (last !== '') {
-                msg.params.last = last;
+              const seq = this._getLastSeq(channel);
+              if (seq) {
+                msg.params.seq = seq;
               }
-              if (sub._since) {
-                msg.params.since = sub._since;
+              const gen = this._getLastGen(channel);
+              if (gen) {
+                msg.params.gen = gen;
+              }
+              const epoch = this._getLastEpoch(channel);
+              if (epoch) {
+                msg.params.epoch = epoch;
               }
             }
             this._call(msg).then(result => {
-              this._subscribeResponse(channel, this._decoder.decodeCommandResult(this._methodType.SUBSCRIBE, result));
+              this._subscribeResponse(
+                channel,
+                this._decoder.decodeCommandResult(this._methodType.SUBSCRIBE, result.result)
+              );
+              if (result.next) {
+                result.next();
+              }
             }, err => {
               this._subscribeError(channel, err);
             });
