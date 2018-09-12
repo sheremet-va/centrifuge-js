@@ -3834,7 +3834,7 @@ var Centrifuge = exports.Centrifuge = function (_EventEmitter) {
   }, {
     key: 'disconnect',
     value: function disconnect() {
-      this._disconnect('client', true);
+      this._disconnect('client', false);
     }
   }, {
     key: 'ping',

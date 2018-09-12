@@ -1237,7 +1237,7 @@ export class Centrifuge extends EventEmitter {
   };
 
   disconnect() {
-    this._disconnect('client', true);
+    this._disconnect('client', false);
   };
 
   ping() {
