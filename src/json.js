@@ -18,7 +18,8 @@ export const JsonPushType = {
   JOIN: 1,
   LEAVE: 2,
   UNSUB: 3,
-  MESSAGE: 4
+  MESSAGE: 4,
+  SESSION: 5
 };
 
 export class JsonEncoder {

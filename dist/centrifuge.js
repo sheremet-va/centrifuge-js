@@ -172,6 +172,8 @@ var Centrifuge = exports.Centrifuge = function (_EventEmitter) {
       privateChannelPrefix: '$',
       onTransportClose: null,
       sockjsServer: null,
+      waitSession: true,
+      onSessionData: null,
       sockjsTransports: ['websocket', 'xdr-streaming', 'xhr-streaming', 'eventsource', 'iframe-eventsource', 'iframe-htmlfile', 'xdr-polling', 'xhr-polling', 'iframe-xhr-polling', 'jsonp-polling'],
       refreshEndpoint: '/centrifuge/refresh',
       refreshHeaders: {},
@@ -530,36 +532,53 @@ var Centrifuge = exports.Centrifuge = function (_EventEmitter) {
           _this3._transportName = 'websocket';
         }
 
-        // Can omit method here due to zero value.
-        var msg = {
-          // method: this._methodType.CONNECT
-        };
-
-        if (_this3._token || _this3._connectData) {
-          msg.params = {};
-        }
-
-        if (_this3._token) {
-          msg.params.token = _this3._token;
-        }
-
-        if (_this3._connectData) {
-          msg.params.data = _this3._connectData;
-        }
-
-        _this3._latencyStart = new Date();
-        _this3._call(msg).then(function (result) {
-          _this3._connectResponse(_this3._decoder.decodeCommandResult(_this3._methodType.CONNECT, result.result));
-          if (result.next) {
-            result.next();
+        _this3.waitSessionPromise = new Promise(function (resolve, reject) {
+          _this3.sessionTimeout = setTimeout(function () {
+            reject();
+          }, 5000);
+          if (!_this3._config.waitSession) {
+            resolve(null);
+          } else {
+            _this3._sessionResolve = resolve;
           }
-        }, function (err) {
-          if (err.code === 109) {
-            // token expired.
-            _this3._refreshRequired = true;
+        }).then(function (data) {
+          if (_this3._config.onSessionData != null) {
+            _this3._config.onSessionData(_this3, data);
           }
-          _this3._disconnect('connect error', true);
-        });
+
+          console.log('session', data);
+
+          // Can omit method here due to zero value.
+          var msg = {
+            // method: this._methodType.CONNECT
+          };
+
+          if (_this3._token || _this3._connectData) {
+            msg.params = {};
+          }
+
+          if (_this3._token) {
+            msg.params.token = _this3._token;
+          }
+
+          if (_this3._connectData) {
+            msg.params.data = _this3._connectData;
+          }
+
+          _this3._latencyStart = new Date();
+          _this3._call(msg).then(function (result) {
+            _this3._connectResponse(_this3._decoder.decodeCommandResult(_this3._methodType.CONNECT, result.result));
+            if (result.next) {
+              result.next();
+            }
+          }, function (err) {
+            if (err.code === 109) {
+              // token expired.
+              _this3._refreshRequired = true;
+            }
+            _this3._disconnect('connect error', true);
+          });
+        }, function () {});
       };
 
       this._transport.onerror = function (error) {
@@ -1353,6 +1372,11 @@ var Centrifuge = exports.Centrifuge = function (_EventEmitter) {
       }
     }
   }, {
+    key: '_handleSession',
+    value: function _handleSession(session) {
+      this._sessionResolve(session.data);
+    }
+  }, {
     key: '_handlePublication',
     value: function _handlePublication(channel, pub) {
       var sub = this._getSub(channel);
@@ -1397,6 +1421,9 @@ var Centrifuge = exports.Centrifuge = function (_EventEmitter) {
       } else if (type === this._pushType.UNSUB) {
         var unsub = this._decoder.decodePushData(this._pushType.UNSUB, push.data);
         this._handleUnsub(channel, unsub);
+      } else if (type === this._pushType.SESSION) {
+        var session = this._decoder.decodePushData(this._pushType.SESSION, push.data);
+        this._handleSession(session);
       }
       next();
     }
@@ -2109,7 +2136,8 @@ var JsonPushType = exports.JsonPushType = {
   JOIN: 1,
   LEAVE: 2,
   UNSUB: 3,
-  MESSAGE: 4
+  MESSAGE: 4,
+  SESSION: 5
 };
 
 var JsonEncoder = exports.JsonEncoder = function () {

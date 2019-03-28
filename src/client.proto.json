@@ -68,7 +68,16 @@
             "JOIN": 1,
             "LEAVE": 2,
             "UNSUB": 3,
-            "MESSAGE": 4
+            "MESSAGE": 4,
+            "SESSION": 5
+          }
+        },
+        "Session": {
+          "fields": {
+            "data": {
+              "type": "bytes",
+              "id": 1
+            }
           }
         },
         "Push": {

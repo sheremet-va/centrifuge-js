@@ -74,6 +74,8 @@ export class Centrifuge extends EventEmitter {
       privateChannelPrefix: '$',
       onTransportClose: null,
       sockjsServer: null,
+      waitSession: true,
+      onSessionData: null,
       sockjsTransports: [
         'websocket',
         'xdr-streaming',
@@ -412,35 +414,52 @@ export class Centrifuge extends EventEmitter {
         this._transportName = 'websocket';
       }
 
-      // Can omit method here due to zero value.
-      const msg = {
-        // method: this._methodType.CONNECT
-      };
-
-      if (this._token || this._connectData) {
-        msg.params = {};
-      }
-
-      if (this._token) {
-        msg.params.token = this._token;
-      }
-
-      if (this._connectData) {
-        msg.params.data = this._connectData;
-      }
-
-      this._latencyStart = new Date();
-      this._call(msg).then(result => {
-        this._connectResponse(this._decoder.decodeCommandResult(this._methodType.CONNECT, result.result));
-        if (result.next) {
-          result.next();
+      this.waitSessionPromise = new Promise((resolve, reject) => {
+        this.sessionTimeout = setTimeout(() => {
+          reject();
+        }, 5000);
+        if (!this._config.waitSession) {
+          resolve(null);
+        } else {
+          this._sessionResolve = resolve;
         }
-      }, err => {
-        if (err.code === 109) { // token expired.
-          this._refreshRequired = true;
+      }).then((data) => {
+        if (this._config.onSessionData != null) {
+          this._config.onSessionData(this, data);
         }
-        this._disconnect('connect error', true);
-      });
+
+        console.log('session', data);
+
+        // Can omit method here due to zero value.
+        const msg = {
+          // method: this._methodType.CONNECT
+        };
+
+        if (this._token || this._connectData) {
+          msg.params = {};
+        }
+
+        if (this._token) {
+          msg.params.token = this._token;
+        }
+
+        if (this._connectData) {
+          msg.params.data = this._connectData;
+        }
+
+        this._latencyStart = new Date();
+        this._call(msg).then(result => {
+          this._connectResponse(this._decoder.decodeCommandResult(this._methodType.CONNECT, result.result));
+          if (result.next) {
+            result.next();
+          }
+        }, err => {
+          if (err.code === 109) { // token expired.
+            this._refreshRequired = true;
+          }
+          this._disconnect('connect error', true);
+        });
+      }, function () {});
     };
 
     this._transport.onerror = error => {
@@ -1167,6 +1186,10 @@ export class Centrifuge extends EventEmitter {
     }
   };
 
+  _handleSession(session) {
+    this._sessionResolve(session.data);
+  };
+
   _handlePublication(channel, pub) {
     const sub = this._getSub(channel);
     if (!sub) {
@@ -1208,6 +1231,9 @@ export class Centrifuge extends EventEmitter {
     } else if (type === this._pushType.UNSUB) {
       const unsub = this._decoder.decodePushData(this._pushType.UNSUB, push.data);
       this._handleUnsub(channel, unsub);
+    } else if (type === this._pushType.SESSION) {
+      const session = this._decoder.decodePushData(this._pushType.SESSION, push.data);
+      this._handleSession(session);
     }
     next();
   }
