@@ -76,7 +76,9 @@ const protobufPushType = {
   JOIN: proto.lookupEnum('PushType').values.JOIN,
   LEAVE: proto.lookupEnum('PushType').values.LEAVE,
   UNSUB: proto.lookupEnum('PushType').values.UNSUB,
-  MESSAGE: proto.lookupEnum('PushType').values.MESSAGE
+  MESSAGE: proto.lookupEnum('PushType').values.MESSAGE,
+  SUB: proto.lookupEnum('PushType').values.SUB,
+  DISCONNECT: proto.lookupEnum('PushType').values.DISCONNECT
 };
 
 const PushSchema = {
@@ -85,7 +87,8 @@ const PushSchema = {
   LEAVE: proto.lookupType('protocol.Leave'),
   UNSUB: proto.lookupType('protocol.Unsub'),
   MESSAGE: proto.lookupType('protocol.Message'),
-  SUB: proto.lookupType('protocol.Sub')
+  SUB: proto.lookupType('protocol.Sub'),
+  DISCONNECT: proto.lookupType('protocol.Disconnect')
 };
 
 const Push = proto.lookupType('protocol.Push');
@@ -225,6 +228,9 @@ export class ProtobufDecoder {
         break;
       case protobufPushType.SUB:
         type = PushSchema.SUB;
+        break;
+      case protobufPushType.DISCONNECT:
+        type = PushSchema.DISCONNECT;
         break;
     }
     return this._decode(type, data);

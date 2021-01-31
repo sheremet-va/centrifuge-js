@@ -69,7 +69,8 @@
             "LEAVE": 2,
             "UNSUB": 3,
             "MESSAGE": 4,
-            "SUB": 5
+            "SUB": 5,
+            "DISCONNECT": 6
           }
         },
         "Push": {
@@ -193,6 +194,22 @@
             "data": {
               "type": "bytes",
               "id": 1
+            }
+          }
+        },
+        "Disconnect": {
+          "fields": {
+            "code": {
+              "type": "uint32",
+              "id": 1
+            },
+            "message": {
+              "type": "string",
+              "id": 2
+            },
+            "reconnect": {
+              "type": "bool",
+              "id": 3
             }
           }
         },

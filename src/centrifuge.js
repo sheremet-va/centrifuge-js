@@ -66,6 +66,7 @@ export class Centrifuge extends EventEmitter {
     this._xhrID = 0;
     this._xhrs = {};
     this._dispatchPromise = Promise.resolve();
+    this._disconnectPush = null;
     this._config = {
       debug: false,
       name: '',
@@ -522,18 +523,27 @@ export class Centrifuge extends EventEmitter {
 
     this._transport.onclose = closeEvent => {
       this._transportClosed = true;
+      let code = 0;
       let reason = _errorConnectionClosed;
       let needReconnect = true;
 
-      if (closeEvent && 'reason' in closeEvent && closeEvent.reason) {
-        try {
-          const advice = JSON.parse(closeEvent.reason);
-          this._debug('reason is an advice object', advice);
-          reason = advice.reason;
-          needReconnect = advice.reconnect;
-        } catch (e) {
-          reason = closeEvent.reason;
-          this._debug('reason is a plain string', reason);
+      if (this._disconnectPush !== null) {
+        code = this._disconnectPush.code;
+        reason = this._disconnectPush.reason;
+        needReconnect = this._disconnectPush.reconnect || false;
+        this._disconnectPush = null;
+      } else {
+        code = closeEvent.code;
+        if (closeEvent && 'reason' in closeEvent && closeEvent.reason) {
+          try {
+            const advice = JSON.parse(closeEvent.reason);
+            this._debug('reason is an advice object', advice);
+            reason = advice.reason;
+            needReconnect = advice.reconnect;
+          } catch (e) {
+            reason = closeEvent.reason;
+            this._debug('reason is a plain string', reason);
+          }
         }
       }
 
@@ -544,12 +554,13 @@ export class Centrifuge extends EventEmitter {
       if (this._config.onTransportClose !== null) {
         this._config.onTransportClose({
           event: closeEvent,
+          code: code,
           reason: reason,
           reconnect: needReconnect
         });
       }
 
-      this._disconnect(reason, needReconnect);
+      this._disconnect(code, reason, needReconnect);
 
       if (this._reconnect === true) {
         this._reconnecting = true;
@@ -781,7 +792,7 @@ export class Centrifuge extends EventEmitter {
     this._setupTransport();
   };
 
-  _disconnect(reason, shouldReconnect) {
+  _disconnect(code, reason, shouldReconnect) {
 
     const reconnect = shouldReconnect || false;
     if (reconnect === false) {
@@ -812,6 +823,7 @@ export class Centrifuge extends EventEmitter {
         }
       }
       this.emit('disconnect', {
+        code: code,
         reason: reason,
         reconnect: reconnect
       });
@@ -1476,6 +1488,12 @@ export class Centrifuge extends EventEmitter {
     }
   };
 
+  _handleDisconnect(disconnect) {
+    console.log(disconnect);
+    this._disconnectPush = disconnect;
+    this._transport.close();
+  };
+
   _handleSub(channel, sub) {
     this._serverSubs[channel] = {
       'seq': sub.seq,
@@ -1558,6 +1576,9 @@ export class Centrifuge extends EventEmitter {
     } else if (type === this._pushType.SUB) {
       const sub = this._decoder.decodePushData(this._pushType.SUB, push.data);
       this._handleSub(channel, sub);
+    } else if (type === this._pushType.DISCONNECT) {
+      const disconnect = this._decoder.decodePushData(this._pushType.DISCONNECT, push.data);
+      this._handleDisconnect(disconnect);
     }
     next();
   }
