@@ -114,6 +114,7 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
     _this._protocol = '';
     _this._config = {
       protocol: '',
+      protocolVersion: 'v1',
       debug: false,
       name: 'js',
       version: '',
@@ -669,8 +670,21 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
 
         _this3._latencyStart = new Date();
 
+        if (_this3._config.protocolVersion === 'v2') {
+          msg.connect = msg.params;
+          delete msg.params;
+        }
+
         _this3._call(msg).then(function (resolveCtx) {
-          _this3._connectResponse(_this3._decoder.decodeCommandResult(_this3._methodType.CONNECT, resolveCtx.result), hasSubs);
+          var result;
+
+          if (_this3._config.protocolVersion === 'v1') {
+            result = _this3._decoder.decodeCommandResult(_this3._methodType.CONNECT, resolveCtx.reply.result);
+          } else {
+            result = resolveCtx.reply.connect;
+          }
+
+          _this3._connectResponse(result, hasSubs);
 
           if (resolveCtx.next) {
             resolveCtx.next();
@@ -778,8 +792,26 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
         method: this._methodType.RPC,
         params: params
       };
-      return this._methodCall(msg, function (result) {
-        return result;
+
+      if (this._config.protocolVersion === 'v2') {
+        msg.rpc = msg.params;
+        delete msg.params;
+        delete msg.method;
+      }
+
+      var self = this;
+      return this._methodCall(msg, function (reply) {
+        var result;
+
+        if (self._config.protocolVersion === 'v1') {
+          result = self._decoder.decodeCommandResult(self._methodType.RPC, reply.result);
+        } else {
+          result = reply.rpc;
+        }
+
+        return {
+          'data': result.data
+        };
       });
     }
   }, {
@@ -791,6 +823,12 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
           data: data
         }
       };
+
+      if (this._config.protocolVersion === 'v2') {
+        msg.send = msg.params;
+        delete msg.params;
+        delete msg.method;
+      }
 
       if (!this.isConnected()) {
         return Promise.reject(this._createErrorObject(_errorConnectionClosed, 0));
@@ -849,7 +887,7 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
 
       return new Promise(function (resolve, reject) {
         _this4._call(msg).then(function (resolveCtx) {
-          resolve(resultCB(_this4._decoder.decodeCommandResult(msg.method, resolveCtx.result)));
+          resolve(resultCB(resolveCtx.reply));
 
           if (resolveCtx.next) {
             resolveCtx.next();
@@ -873,6 +911,13 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
           data: data
         }
       };
+
+      if (this._config.protocolVersion === 'v2') {
+        msg.publish = msg.params;
+        delete msg.params;
+        delete msg.method;
+      }
+
       return this._methodCall(msg, function () {
         return {};
       });
@@ -886,7 +931,23 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
         method: this._methodType.HISTORY,
         params: params
       };
-      return this._methodCall(msg, function (result) {
+
+      if (this._config.protocolVersion === 'v2') {
+        msg.history = msg.params;
+        delete msg.params;
+        delete msg.method;
+      }
+
+      var self = this;
+      return this._methodCall(msg, function (reply) {
+        var result;
+
+        if (self._config.protocolVersion === 'v1') {
+          result = self._decoder.decodeCommandResult(self._methodType.HISTORY, reply.result);
+        } else {
+          result = reply.history;
+        }
+
         return {
           'publications': result.publications,
           'epoch': result.epoch || '',
@@ -903,7 +964,23 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
           channel: channel
         }
       };
-      return this._methodCall(msg, function (result) {
+
+      if (this._config.protocolVersion === 'v2') {
+        msg.presence = msg.params;
+        delete msg.params;
+        delete msg.method;
+      }
+
+      var self = this;
+      return this._methodCall(msg, function (reply) {
+        var result;
+
+        if (self._config.protocolVersion === 'v1') {
+          result = self._decoder.decodeCommandResult(self._methodType.PRESENCE, reply.result);
+        } else {
+          result = reply.presence;
+        }
+
         return {
           'presence': result.presence
         };
@@ -918,7 +995,22 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
           channel: channel
         }
       };
-      return this._methodCall(msg, function (result) {
+
+      if (this._config.protocolVersion === 'v2') {
+        msg['presence_stats'] = msg.params;
+        delete msg.params;
+        delete msg.method;
+      }
+
+      return this._methodCall(msg, function (reply) {
+        var result;
+
+        if (self._config.protocolVersion === 'v1') {
+          result = self._decoder.decodeCommandResult(self._methodType.PRESENCE_STATS, reply.result);
+        } else {
+          result = reply.presence_stats;
+        }
+
         return {
           'num_users': result.num_users,
           'num_clients': result.num_clients
@@ -990,7 +1082,11 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
       if (id && id > 0) {
         this._handleReply(reply, next);
       } else {
-        this._handlePush(reply.result, next);
+        if (this._config.protocolVersion === 'v1') {
+          this._handlePush(reply.result, next);
+        } else {
+          this._handlePushV2(reply.push, next);
+        }
       }
 
       return p;
@@ -1181,6 +1277,12 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
             }
           };
 
+          if (_this8._config.protocolVersion === 'v2') {
+            msg.refresh = msg.params;
+            delete msg.params;
+            delete msg.method;
+          }
+
           _this8._call(msg).then(function (resolveCtx) {
             _this8._refreshResponse(_this8._decoder.decodeCommandResult(_this8._methodType.REFRESH, resolveCtx.result));
 
@@ -1305,6 +1407,12 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
 
         if (sub === null) {
           return;
+        }
+
+        if (_this11._config.protocolVersion === 'v2') {
+          msg['sub_refresh'] = msg.params;
+          delete msg.params;
+          delete msg.method;
         }
 
         _this11._call(msg).then(function (resolveCtx) {
@@ -1472,8 +1580,22 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
           }
         }
 
+        if (this._config.protocolVersion === 'v2') {
+          msg.subscribe = msg.params;
+          delete msg.params;
+          delete msg.method;
+        }
+
         this._call(msg).then(function (resolveCtx) {
-          _this14._subscribeResponse(channel, recover, _this14._decoder.decodeCommandResult(_this14._methodType.SUBSCRIBE, resolveCtx.result));
+          var result;
+
+          if (_this14._config.protocolVersion === 'v1') {
+            result = _this14._decoder.decodeCommandResult(_this14._methodType.SUBSCRIBE, resolveCtx.reply.result);
+          } else {
+            result = resolveCtx.reply.subscribe;
+          }
+
+          _this14._subscribeResponse(channel, recover, result);
 
           if (resolveCtx.next) {
             resolveCtx.next();
@@ -1497,12 +1619,20 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
 
       if (this.isConnected()) {
         // No need to unsubscribe in disconnected state - i.e. client already unsubscribed.
-        this._addMessage({
+        var msg = {
           method: this._methodType.UNSUBSCRIBE,
           params: {
             channel: sub.channel
           }
-        });
+        };
+
+        if (this._config.protocolVersion === 'v2') {
+          msg.unsubscribe = msg.params;
+          delete msg.params;
+          delete msg.method;
+        }
+
+        this._addMessage(msg);
       }
     }
   }, {
@@ -1816,7 +1946,6 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
     key: "_handleReply",
     value: function _handleReply(reply, next) {
       var id = reply.id;
-      var result = reply.result;
 
       if (!(id in this._callbacks)) {
         next();
@@ -1835,7 +1964,7 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
         }
 
         callback({
-          result: result,
+          reply: reply,
           next: next
         });
       } else {
@@ -1949,6 +2078,10 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
         ctx.info = pub.info;
       }
 
+      if (pub.meta) {
+        ctx.meta = pub.meta;
+      }
+
       if (!sub) {
         if (this._isServerSub(channel)) {
           if (pub.seq !== undefined) {
@@ -2031,6 +2164,27 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
       next();
     }
   }, {
+    key: "_handlePushV2",
+    value: function _handlePushV2(data, next) {
+      var channel = data.channel;
+
+      if (data.pub) {
+        this._handlePublication(channel, data.pub);
+      } else if (data.message) {
+        this._handleMessage(data.message);
+      } else if (data.join) {
+        this._handleJoin(channel, data.join);
+      } else if (data.leave) {
+        this._handleLeave(channel, data.leave);
+      } else if (data.unsubscribe) {
+        this._handleUnsub(channel, data.unsubscribe);
+      } else if (data.subscribe) {
+        this._handleSub(channel, data.subscribe);
+      }
+
+      next();
+    }
+  }, {
     key: "_flush",
     value: function _flush() {
       var messages = this._messages.slice(0);
@@ -2047,6 +2201,11 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
       var msg = {
         method: this._methodType.PING
       };
+
+      if (this._config.protocolVersion === 'v2') {
+        delete msg.params;
+        delete msg.method;
+      }
 
       this._call(msg).then(function (resolveCtx) {
         _this18._pingResponse(_this18._decoder.decodeCommandResult(_this18._methodType.PING, resolveCtx.result));
@@ -2344,8 +2503,22 @@ var Centrifuge = /*#__PURE__*/function (_EventEmitter) {
                   }
                 }
 
+                if (_this20._config.protocolVersion === 'v2') {
+                  msg.subscribe = msg.params;
+                  delete msg.params;
+                  delete msg.method;
+                }
+
                 _this20._call(msg).then(function (resolveCtx) {
-                  _this20._subscribeResponse(channel, recover, _this20._decoder.decodeCommandResult(_this20._methodType.SUBSCRIBE, resolveCtx.result));
+                  var result;
+
+                  if (_this20._config.protocolVersion === 'v1') {
+                    result = _this20._decoder.decodeCommandResult(_this20._methodType.SUBSCRIBE, resolveCtx.reply.result);
+                  } else {
+                    result = resolveCtx.reply.subscribe;
+                  }
+
+                  _this20._subscribeResponse(channel, recover, result);
 
                   if (resolveCtx.next) {
                     resolveCtx.next();
